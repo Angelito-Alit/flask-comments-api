@@ -8,7 +8,7 @@ on:
     branches: [ main, master ]
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  PROJECT_ID: noticias-24d33
   SERVICE_NAME: flask-comments-api
   REGION: us-central1
   REPOSITORY: uteq-repositorio
@@ -58,7 +58,7 @@ jobs:
       uses: google-github-actions/auth@v1
       with:
         credentials_json: ${{ secrets.GCP_SA_KEY }}
-        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        project_id: ${{ env.PROJECT_ID }}
     
     - name: Set up Cloud SDK
       uses: google-github-actions/setup-gcloud@v1
@@ -101,11 +101,12 @@ jobs:
     - name: Get service URL
       run: |
         SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
-        echo "Service deployed at: $SERVICE_URL"
+        echo "🚀 Aplicación desplegada en: $SERVICE_URL"
         echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
     
     - name: Test deployment
       run: |
         sleep 30
+        echo "Probando endpoint de salud..."
         curl -f $SERVICE_URL/health || exit 1
-        echo "✅ Deployment successful and health check passed!"
+        echo "✅ ¡Despliegue exitoso y verificación de salud completada!"
