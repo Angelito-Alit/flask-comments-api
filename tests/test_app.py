@@ -1,7 +1,7 @@
 import unittest
 import json
 from flask_testing import TestCase
-from app import app, comments_db
+from app import app
 
 class FlaskAppTestCase(TestCase):
     
@@ -12,7 +12,7 @@ class FlaskAppTestCase(TestCase):
     
     def setUp(self):
         """Configuración antes de cada test"""
-        global comments_db
+        from app import comments_db
         comments_db.clear()
         # Datos de prueba
         comments_db.extend([
