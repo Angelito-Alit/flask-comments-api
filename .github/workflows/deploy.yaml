@@ -250,21 +250,4 @@ jobs:
           echo "Deployment failed"
           echo "Check deployment logs for details."
         fi
-
-  notify:
-    name: Notifications
-    runs-on: ubuntu-latest
-    needs: [deploy]
-    if: always()
-    
-    steps:
-    - name: Deployment notification
-      run: |
-        if [ "${{ needs.deploy.result }}" == "success" ]; then
-          echo "Deployment successful!"
-          echo "The Flask Comments API has been successfully deployed."
-        else
-          echo "Deployment failed!"
-          echo "Please check the deployment logs for more information."
-        fi
         
