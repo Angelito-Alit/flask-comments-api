@@ -1,7 +1,7 @@
 import unittest
 import json
 from flask_testing import TestCase
-from app import create_app
+from app import create_app, comments_db
 from config import TestingConfig
 
 class FlaskAppTestCase(TestCase):
