@@ -126,12 +126,16 @@ def add_comment():
     try:
         data = request.get_json()
         
-        # Sanitizar inputs
-        author = sanitize_input(data['author'])
-        comment = sanitize_input(data['comment'])
-        
-        if not author or not comment:
-            return jsonify({"error": "Author and comment cannot be empty"}), 400
+        # Validar y sanitizar usando InputValidator
+        try:
+            author = InputValidator.validate_author(data['author'])
+            comment = InputValidator.validate_comment(data['comment'])
+        except ValidationError as e:
+            return jsonify({
+                "error": "Validation error", 
+                "message": e.message,
+                "field": e.field
+            }), 400
         
         new_comment = {
             "id": len(comments_db) + 1,
@@ -195,7 +199,15 @@ def delete_comment(comment_id):
 def get_weather(city):
     """Endpoint que consume API externa - OpenWeatherMap"""
     try:
-        city = sanitize_input(city)
+        # Validar nombre de ciudad
+        try:
+            city = InputValidator.validate_city_name(city)
+        except ValidationError as e:
+            return jsonify({
+                "error": "Invalid city name",
+                "message": e.message
+            }), 400
+        
         api_key = app.config['WEATHER_API_KEY']
         
         if api_key == 'demo-key':
