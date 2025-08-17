@@ -1,9 +1,8 @@
-# .github/workflows/deploy.yml
-name: Deploy to Google Cloud Run
+name: CI/CD Pipeline - Flask Comments API
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, production ]
   pull_request:
     branches: [ main, master ]
 
@@ -16,8 +15,9 @@ env:
   REGISTRY_URL: us-central1-docker.pkg.dev
 
 jobs:
-  test:
-    name: Test Application
+  # Job 1: Code Quality and Security
+  code-quality:
+    name: Code Quality and Security
     runs-on: ubuntu-latest
     
     steps:
@@ -33,22 +33,134 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest flask-testing
+        pip install flake8 black isort bandit safety
     
-    - name: Run tests
-      run: |
-        python -m pytest tests/ -v || echo "No tests found - skipping"
+    - name: Check code formatting with Black
+      run: black . --check --diff
     
-    - name: Lint code
+    - name: Check import sorting with isort
+      run: isort . --check-only --diff
+    
+    - name: Lint with flake8
       run: |
-        pip install flake8
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    
+    - name: Security check with Bandit
+      run: bandit -r . -f json -o bandit-report.json || true
+    
+    - name: Check dependencies with Safety
+      run: safety check --json --output safety-report.json || true
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
 
-  build-and-deploy:
-    name: Build and Deploy to Cloud Run
+  # Job 2: Run Tests
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    needs: code-quality
+    
+    strategy:
+      matrix:
+        python-version: ['3.11']
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov flask-testing coverage
+    
+    - name: Run tests with coverage
+      run: |
+        python -m pytest tests/ -v --cov=. --cov-report=xml --cov-report=html --cov-report=term
+    
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: true
+    
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: htmlcov/
+
+  # Job 3: Build and Test Docker Image
+  docker-build:
+    name: Docker Build and Test
     runs-on: ubuntu-latest
     needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: production
+        load: true
+        tags: flask-comments-api:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Test Docker image
+      run: |
+        docker run -d --name test-container -p 8080:8080 \
+          -e FLASK_ENV=production \
+          -e SECRET_KEY=test-key \
+          flask-comments-api:test
+        
+        sleep 30
+        
+        curl -f http://localhost:8080/health || exit 1
+        curl -f http://localhost:8080/ || exit 1
+        
+        docker stop test-container
+        docker rm test-container
+    
+    - name: Security scan with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'flask-comments-api:test'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  # Job 4: Deploy to Production
+  deploy:
+    name: Deploy to Google Cloud Run
+    runs-on: ubuntu-latest
+    needs: [code-quality, test, docker-build]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    environment: production
     
     steps:
     - name: Checkout code
@@ -65,23 +177,19 @@ jobs:
     
     - name: Verify GCP Authentication
       run: |
-        echo "Verificando autenticación..."
         gcloud auth list --filter=status:ACTIVE --format="value(account)"
         gcloud config get-value project
     
     - name: Configure Docker for Artifact Registry
       run: |
-        echo "Configurando Docker para Artifact Registry..."
         gcloud auth configure-docker $REGISTRY_URL --quiet
     
-    - name: Build Docker image
+    - name: Build and push Docker image
       run: |
-        docker build . --platform linux/amd64 -t $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$GITHUB_SHA
-        docker tag $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$GITHUB_SHA $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:latest
-    
-    - name: Push Docker image to Artifact Registry
-      run: |
-        echo "Pushing image to: $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME"
+        docker build . --platform linux/amd64 \
+          -t $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$GITHUB_SHA \
+          -t $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:latest
+        
         docker push $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$GITHUB_SHA
         docker push $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:latest
     
@@ -96,16 +204,67 @@ jobs:
           --memory 512Mi \
           --cpu 1 \
           --max-instances 10 \
-          --set-env-vars="ENVIRONMENT=production"
+          --set-env-vars="ENVIRONMENT=production,FLASK_ENV=production" \
+          --set-env-vars="LOG_LEVEL=INFO,LOG_FORMAT=json" \
+          --timeout 300
     
     - name: Get service URL
+      id: get-url
       run: |
-        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
-        echo "🚀 ¡Tu aplicación está disponible en: $SERVICE_URL"
-        echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
+        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME \
+          --region=$REGION --format='value(status.url)')
+        echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_OUTPUT
+        echo "Service URL: $SERVICE_URL"
     
-    - name: Test deployment
+    - name: Post-deployment verification
       run: |
-        sleep 30
-        curl -f $SERVICE_URL/health || exit 1
-        echo "✅ ¡Despliegue exitoso y health check pasado!"
+        sleep 60
+        curl -f ${{ steps.get-url.outputs.SERVICE_URL }}/health || exit 1
+        curl -f ${{ steps.get-url.outputs.SERVICE_URL }}/ || exit 1
+        curl -f ${{ steps.get-url.outputs.SERVICE_URL }}/comments || exit 1
+    
+    - name: Create deployment summary
+      run: |
+        echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Status**: Successful" >> $GITHUB_STEP_SUMMARY
+        echo "**URL**: ${{ steps.get-url.outputs.SERVICE_URL }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Image**: $REGISTRY_URL/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+        echo "**Deployed**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit**: $GITHUB_SHA" >> $GITHUB_STEP_SUMMARY
+
+  # Job 5: Notification
+  notify:
+    name: Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    
+    steps:
+    - name: Deployment notification
+      run: |
+        if [ "${{ needs.deploy.result }}" == "success" ]; then
+          echo "Deployment successful"
+          echo "The Flask Comments API has been deployed."
+        else
+          echo "Deployment failed"
+          echo "Check deployment logs for details."
+        fi
+
+  notify:
+    name: Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    
+    steps:
+    - name: Deployment notification
+      run: |
+        if [ "${{ needs.deploy.result }}" == "success" ]; then
+          echo "Deployment successful!"
+          echo "The Flask Comments API has been successfully deployed."
+        else
+          echo "Deployment failed!"
+          echo "Please check the deployment logs for more information."
+        fi
+        
