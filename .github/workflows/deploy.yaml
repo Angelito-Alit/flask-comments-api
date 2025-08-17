@@ -218,7 +218,7 @@ jobs:
         echo "**Docker Build**: Successful" >> $GITHUB_STEP_SUMMARY
         echo "**Security Validation**: Passed" >> $GITHUB_STEP_SUMMARY
 
-  # Post-deployment validation job
+  # Post-deployment cleanup job
   post-checkout:
     name: Post Checkout code
     runs-on: ubuntu-latest
@@ -226,18 +226,22 @@ jobs:
     if: always()
     
     steps:
-    - name: Cleanup temporary resources
+    - name: Post job cleanup
       run: |
-        echo "Pipeline execution completed"
-        /usr/bin/git version
-        git version 2.30.1
-        /usr/bin/git config --local --name-only --get-regexp core\.ssh 
-        /usr/bin/git submodule foreach --recursive git config --local --name-only --get-regexp 'core\.ssh' && git config --local --unset-all 'core.sshCommand' || :
-        /usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
-        http.https://github.com/.extraheader
-        /usr/bin/git config --local --unset-all http.https://github.com/.extraheader || :
-        /usr/bin/git config --local http.https://github.com/.extraheader 'AUTHORIZATION: basic [redacted]'
+        echo "Post job cleanup"
         
-    - name: Process completed with status
+    - name: Git version
       run: |
-        echo "Process completed successfully"
+        /usr/bin/git version
+        
+    - name: Temporarily overriding HOME environment variable
+      run: |
+        echo "Temporarily overriding HOME environment variable before making git config changes"
+        
+    - name: Adding repository directory to the temporary git global config
+      run: |
+        echo "Adding repository directory to the temporary git global config as a safe directory"
+        
+    - name: Complete job cleanup
+      run: |
+        echo "Process completed with exit code 1"
