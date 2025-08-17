@@ -5,12 +5,15 @@ from app import create_app, comments_db
 from config import TestingConfig
 
 class FlaskAppTestCase(TestCase):
+    """Test suite for the main Flask application endpoints."""
     
     def create_app(self):
+        """Create the Flask app for testing."""
         app = create_app('testing')
         return app
     
     def setUp(self):
+        """Set up test data before each test runs."""
         from app import comments_db
         comments_db.clear()
         comments_db.extend([
@@ -29,6 +32,7 @@ class FlaskAppTestCase(TestCase):
         ])
     
     def test_home_endpoint(self):
+        """Test the home endpoint returns correct data."""
         response = self.client.get('/')
         self.assertEqual(response.status_code, 200)
         
@@ -40,6 +44,7 @@ class FlaskAppTestCase(TestCase):
         self.assertIsInstance(data['features'], list)
     
     def test_health_endpoint(self):
+        """Test the health check endpoint works properly."""
         response = self.client.get('/health')
         self.assertEqual(response.status_code, 200)
         
@@ -49,12 +54,14 @@ class FlaskAppTestCase(TestCase):
         self.assertIn('version', data)
     
     def test_security_headers(self):
+        """Test that security headers are present in responses."""
         response = self.client.get('/')
         self.assertIn('X-API-Version', response.headers)
         self.assertIn('X-Timestamp', response.headers)
         self.assertEqual(response.headers['X-API-Version'], '1.0.0')
     
     def test_get_comments(self):
+        """Test getting all comments returns the right format."""
         response = self.client.get('/comments')
         self.assertEqual(response.status_code, 200)
         
@@ -66,6 +73,7 @@ class FlaskAppTestCase(TestCase):
         self.assertEqual(len(data['comments']), 2)
     
     def test_add_comment_valid(self):
+        """Test adding a new comment with valid data."""
         new_comment = {
             "author": "Test Author",
             "comment": "This is a test comment"
@@ -84,6 +92,7 @@ class FlaskAppTestCase(TestCase):
         self.assertEqual(data['comment']['id'], 3)  
     
     def test_add_comment_missing_fields(self):
+        """Test error handling when required fields are missing."""
         invalid_comment = {"author": "Test Author"}  
         
         response = self.client.post('/comments',
@@ -98,6 +107,7 @@ class FlaskAppTestCase(TestCase):
         self.assertIn('comment', data['missing_fields'])
     
     def test_add_comment_invalid_json(self):
+        """Test error handling for invalid JSON data."""
         response = self.client.post('/comments',
                                   data="invalid json",
                                   content_type='application/json')
@@ -108,6 +118,7 @@ class FlaskAppTestCase(TestCase):
         self.assertIn('error', data)
     
     def test_add_comment_empty_values(self):
+        """Test that empty field values are rejected properly."""
         empty_comment = {
             "author": "",
             "comment": ""
@@ -123,6 +134,7 @@ class FlaskAppTestCase(TestCase):
         self.assertIn('error', data)
     
     def test_input_sanitization(self):
+        """Test that dangerous input is cleaned before saving."""
         malicious_comment = {
             "author": "Test<script>alert('xss')</script>",
             "comment": "Comment with 'quotes' and <tags>"
@@ -140,6 +152,7 @@ class FlaskAppTestCase(TestCase):
         self.assertNotIn("'", data['comment']['comment'])
     
     def test_get_specific_comment(self):
+        """Test getting a single comment by its ID."""
         response = self.client.get('/comments/1')
         self.assertEqual(response.status_code, 200)
         
@@ -148,6 +161,7 @@ class FlaskAppTestCase(TestCase):
         self.assertEqual(data['author'], 'Test User')
     
     def test_get_nonexistent_comment(self):
+        """Test that requesting a missing comment returns 404."""
         response = self.client.get('/comments/999')
         self.assertEqual(response.status_code, 404)
         
@@ -155,19 +169,24 @@ class FlaskAppTestCase(TestCase):
         self.assertIn('error', data)
     
     def test_delete_comment(self):
+        """Test deleting a comment removes it completely."""
+        # First check the comment exists
         response = self.client.get('/comments/1')
         self.assertEqual(response.status_code, 200)
         
+        # Delete the comment
         response = self.client.delete('/comments/1')
         self.assertEqual(response.status_code, 200)
         
         data = json.loads(response.data)
         self.assertIn('message', data)
         
+        # Check the comment is gone
         response = self.client.get('/comments/1')
         self.assertEqual(response.status_code, 404)
     
     def test_delete_nonexistent_comment(self):
+        """Test deleting a comment that doesn't exist."""
         response = self.client.delete('/comments/999')
         self.assertEqual(response.status_code, 404)
         
@@ -175,6 +194,7 @@ class FlaskAppTestCase(TestCase):
         self.assertIn('error', data)
     
     def test_api_demo_endpoint(self):
+        """Test the API demo endpoint works correctly."""
         response = self.client.get('/api-demo')
         self.assertEqual(response.status_code, 200)
         
@@ -185,6 +205,7 @@ class FlaskAppTestCase(TestCase):
         self.assertEqual(data['source'], 'jsonplaceholder.typicode.com')
     
     def test_weather_endpoint_demo(self):
+        """Test the weather demo endpoint returns mock data."""
         response = self.client.get('/weather/Madrid')
         self.assertEqual(response.status_code, 200)
         
@@ -195,6 +216,7 @@ class FlaskAppTestCase(TestCase):
         self.assertEqual(data['city'], 'Madrid')
     
     def test_weather_endpoint_sanitization(self):
+        """Test that city names are cleaned in weather endpoint."""
         response = self.client.get('/weather/Madrid<script>')
         self.assertEqual(response.status_code, 200)
         
@@ -202,6 +224,7 @@ class FlaskAppTestCase(TestCase):
         self.assertNotIn('<script>', data['city'])
     
     def test_404_error_handler(self):
+        """Test that 404 errors are handled correctly."""
         response = self.client.get('/nonexistent')
         self.assertEqual(response.status_code, 404)
         
@@ -211,26 +234,32 @@ class FlaskAppTestCase(TestCase):
         self.assertEqual(data['status_code'], 404)
     
     def test_method_not_allowed(self):
+        """Test that wrong HTTP methods return 405 error."""
         response = self.client.put('/comments') 
         self.assertEqual(response.status_code, 405)
 
 class ConfigTestCase(unittest.TestCase):
+    """Test suite for application configuration settings."""
     
     def test_development_config(self):
+        """Test that development config has debug enabled."""
         app = create_app('development')
         self.assertTrue(app.config['DEBUG'])
         self.assertEqual(app.config['LOG_LEVEL'], 'DEBUG')
     
     def test_testing_config(self):
+        """Test that testing config has correct test settings."""
         app = create_app('testing')
         self.assertTrue(app.config['TESTING'])
         self.assertEqual(app.config['SECRET_KEY'], 'test-secret-key')
         self.assertEqual(app.config['API_RATE_LIMIT'], 1000)
     
     def test_production_config(self):
+        """Test that production config is secure and optimized."""
         app = create_app('production')
         self.assertFalse(app.config['DEBUG'])
         self.assertIn('SECURITY_HEADERS', app.config)
 
 if __name__ == '__main__':
+    # Run all tests when script is executed directly
     unittest.main()
