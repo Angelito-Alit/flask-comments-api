@@ -22,12 +22,12 @@ COPY . .
 RUN chown -R appuser:appgroup /app
 USER appuser
 EXPOSE 5000
-CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]
+CMD ["python", "app.py"]
 
 # Stage para production
 FROM base as production
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código de aplicación
 COPY . .
@@ -38,9 +38,9 @@ EXPOSE 8080
 
 # Variables de entorno
 ENV PYTHONPATH=/app
-ENV FLASK_APP=app.py
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

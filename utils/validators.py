@@ -1,7 +1,6 @@
 import re
 import html
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Dict, Any, Optional
 
 class ValidationError(Exception):
     """Custom exception for validation errors"""
@@ -9,6 +8,42 @@ class ValidationError(Exception):
         self.message = message
         self.field = field
         super().__init__(self.message)
+
+def sanitize_input(text):
+    """Sanitize user input by removing dangerous characters"""
+    if not isinstance(text, str):
+        return text
+    
+    # Remove HTML tags and dangerous characters
+    text = html.escape(text)
+    text = re.sub(r'[<>"\']', '', text)
+    
+    # Limit length
+    if len(text) > 500:
+        text = text[:500]
+    
+    return text.strip()
+
+def validate_comment_data(data):
+    """Validate comment data structure and content"""
+    if not isinstance(data, dict):
+        return {'valid': False, 'message': 'Data must be a dictionary'}
+    
+    # Check required fields exist and are not empty
+    if not data.get('author') or not str(data.get('author')).strip():
+        return {'valid': False, 'message': 'Author cannot be empty'}
+    
+    if not data.get('comment') or not str(data.get('comment')).strip():
+        return {'valid': False, 'message': 'Comment cannot be empty'}
+    
+    # Check length limits
+    if len(str(data['author'])) > 100:
+        return {'valid': False, 'message': 'Author name too long (max 100 characters)'}
+    
+    if len(str(data['comment'])) > 1000:
+        return {'valid': False, 'message': 'Comment too long (max 1000 characters)'}
+    
+    return {'valid': True}
 
 class InputValidator:
     """Comprehensive input validation and sanitization"""

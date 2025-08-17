@@ -1,104 +1,192 @@
-from flask import Flask, jsonify, request
-import requests
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
+import json
+import html
 import logging
+import requests
+import re
 from datetime import datetime
-from config import config
-from middleware.security import rate_limit, validate_json, sanitize_input, add_security_headers
-from utils.validators import InputValidator, ValidationError
+from functools import wraps
+import time
 
-def create_app(config_name=None):
-    """Application factory pattern"""
-    app = Flask(__name__)
-    
-    # Configuración
-    config_name = config_name or os.environ.get('FLASK_ENV', 'default')
-    app.config.from_object(config[config_name])
-    config[config_name].init_app(app)
-    
-    # Configurar logging
-    logging.basicConfig(
-        level=getattr(logging, app.config['LOG_LEVEL']),
-        format='%(asctime)s %(levelname)s: %(message)s'
-    )
-    
-    # Middleware global
-    @app.after_request
-    def after_request(response):
-        return add_security_headers(response)
-    
-    # Error handlers
-    @app.errorhandler(404)
-    def not_found(error):
-        return jsonify({
-            'error': 'Not Found',
-            'message': 'The requested resource was not found',
-            'status_code': 404
-        }), 404
-    
-    @app.errorhandler(429)
-    def ratelimit_handler(error):
-        return jsonify({
-            'error': 'Rate limit exceeded',
-            'message': 'Too many requests',
-            'status_code': 429
-        }), 429
-    
-    @app.errorhandler(500)
-    def internal_error(error):
-        app.logger.error(f"Internal error: {str(error)}")
-        return jsonify({
-            'error': 'Internal Server Error',
-            'message': 'An internal server error occurred',
-            'status_code': 500
-        }), 500
-    
-    return app
+# Initialize Flask app
+app = Flask(__name__)
 
-# Crear instancia de la aplicación
-app = create_app()
+# Load configuration based on environment
+env = os.getenv('FLASK_ENV', 'development')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['DEBUG'] = env == 'development'
+app.config['TESTING'] = env == 'testing'
+app.config['LOG_LEVEL'] = os.environ.get('LOG_LEVEL', 'INFO')
+app.config['WEATHER_API_KEY'] = os.environ.get('WEATHER_API_KEY', 'demo-key')
 
-# Simulación de base de datos en memoria
-comments_db = [
+# Security headers configuration
+app.config['SECURITY_HEADERS'] = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
+    'Referrer-Policy': 'strict-origin-when-cross-origin'
+}
+
+# Enable CORS
+CORS(app)
+
+# Setup logging
+logging.basicConfig(
+    level=getattr(logging, app.config['LOG_LEVEL']),
+    format='%(asctime)s %(levelname)s: %(message)s'
+)
+
+# Rate limiting storage
+request_counts = {}
+
+def rate_limit(max_requests=100, window=3600):
+    """Rate limiting decorator"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if app.config['TESTING']:
+                return f(*args, **kwargs)
+                
+            client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+            current_time = time.time()
+            window_start = current_time - window
+            
+            # Clean old requests
+            if client_ip in request_counts:
+                request_counts[client_ip] = [
+                    req_time for req_time in request_counts[client_ip] 
+                    if req_time > window_start
+                ]
+            else:
+                request_counts[client_ip] = []
+            
+            # Check rate limit
+            if len(request_counts[client_ip]) >= max_requests:
+                return jsonify({
+                    'error': 'Rate limit exceeded',
+                    'message': f'Maximum {max_requests} requests per hour'
+                }), 429
+            
+            request_counts[client_ip].append(current_time)
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def validate_json(required_fields=None):
+    """JSON validation decorator"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+            
+            data = request.get_json()
+            if data is None:
+                return jsonify({'error': 'Invalid JSON'}), 400
+            
+            if required_fields:
+                missing_fields = [field for field in required_fields if field not in data or not data[field]]
+                if missing_fields:
+                    return jsonify({
+                        'error': 'Missing required fields',
+                        'missing_fields': missing_fields
+                    }), 400
+            
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def sanitize_input(text):
+    """Sanitize user input"""
+    if not isinstance(text, str):
+        return text
+    
+    # Remove HTML tags and dangerous characters
+    text = html.escape(text)
+    text = re.sub(r'[<>"\']', '', text)
+    
+    # Limit length
+    if len(text) > 500:
+        text = text[:500]
+    
+    return text.strip()
+
+def validate_comment_data(data):
+    """Validate comment data"""
+    if not data.get('author') or not data.get('author').strip():
+        return {'valid': False, 'message': 'Author cannot be empty'}
+    
+    if not data.get('comment') or not data.get('comment').strip():
+        return {'valid': False, 'message': 'Comment cannot be empty'}
+    
+    if len(data['author']) > 100:
+        return {'valid': False, 'message': 'Author name too long (max 100 characters)'}
+    
+    if len(data['comment']) > 1000:
+        return {'valid': False, 'message': 'Comment too long (max 1000 characters)'}
+    
+    return {'valid': True}
+
+# In-memory storage for comments
+comments_storage = [
     {
         "id": 1,
-        "author": "Juan Pérez",
-        "comment": "Este es un comentario de ejemplo",
-        "timestamp": "2024-01-15T10:30:00"
+        "author": "John Doe",
+        "comment": "This is a sample comment",
+        "timestamp": "2024-01-15T10:30:00Z"
     },
     {
         "id": 2,
-        "author": "María González",
-        "comment": "Excelente proyecto de CI/CD",
-        "timestamp": "2024-01-15T11:15:00"
+        "author": "Jane Smith", 
+        "comment": "Another example comment",
+        "timestamp": "2024-01-15T11:00:00Z"
     }
 ]
 
-@app.route('/')
+# Global counter for comment IDs
+comment_counter = 2
+
+@app.after_request
+def after_request(response):
+    """Add security headers to all responses"""
+    if app.config.get('SECURITY_HEADERS'):
+        for header, value in app.config['SECURITY_HEADERS'].items():
+            response.headers[header] = value
+    
+    response.headers['X-API-Version'] = '1.0.0'
+    response.headers['X-Timestamp'] = datetime.utcnow().isoformat()
+    
+    return response
+
+@app.route('/', methods=['GET'])
 @rate_limit(max_requests=200)
 def home():
-    """Endpoint principal"""
+    """Home endpoint that provides API information."""
     return jsonify({
-        "message": "Flask Comments API - Proyecto Universitario",
+        "message": "Flask Comments API",
         "status": "running",
-        "timestamp": datetime.now().isoformat(),
         "version": "1.0.0",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "environment": os.environ.get('FLASK_ENV', 'production'),
         "features": [
             "Comments CRUD API",
-            "Weather integration",
+            "Weather integration", 
             "Rate limiting",
             "Input validation",
             "Security headers"
         ]
-    })
+    }), 200
 
-@app.route('/health')
+@app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint para el deploy"""
+    """Health check endpoint."""
     return jsonify({
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "uptime": "available",
         "version": "1.0.0"
     }), 200
@@ -106,14 +194,14 @@ def health():
 @app.route('/comments', methods=['GET'])
 @rate_limit(max_requests=150)
 def get_comments():
-    """Obtener todos los comentarios"""
+    """Get all comments."""
     try:
-        app.logger.info(f"Fetching {len(comments_db)} comments")
+        app.logger.info(f"Fetching {len(comments_storage)} comments")
         return jsonify({
-            "comments": comments_db,
-            "total": len(comments_db),
-            "timestamp": datetime.now().isoformat()
-        })
+            "comments": comments_storage,
+            "total": len(comments_storage),
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }), 200
     except Exception as e:
         app.logger.error(f"Error fetching comments: {str(e)}")
         return jsonify({"error": "Failed to fetch comments"}), 500
@@ -122,52 +210,54 @@ def get_comments():
 @rate_limit(max_requests=50)
 @validate_json(required_fields=['author', 'comment'])
 def add_comment():
-    """Agregar un nuevo comentario"""
+    """Add a new comment."""
+    global comment_counter
+    
     try:
         data = request.get_json()
         
-        # Validar y sanitizar usando InputValidator
-        try:
-            author = InputValidator.validate_author(data['author'])
-            comment = InputValidator.validate_comment(data['comment'])
-        except ValidationError as e:
-            return jsonify({
-                "error": "Validation error", 
-                "message": e.message,
-                "field": e.field
-            }), 400
+        # Validate comment data
+        validation_result = validate_comment_data(data)
+        if not validation_result['valid']:
+            return jsonify({"error": validation_result['message']}), 400
         
+        # Sanitize input data
+        sanitized_author = sanitize_input(data['author'])
+        sanitized_comment = sanitize_input(data['comment'])
+        
+        # Create new comment
+        comment_counter += 1
         new_comment = {
-            "id": len(comments_db) + 1,
-            "author": author,
-            "comment": comment,
-            "timestamp": datetime.now().isoformat()
+            "id": comment_counter,
+            "author": sanitized_author,
+            "comment": sanitized_comment,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
         }
         
-        comments_db.append(new_comment)
-        app.logger.info(f"New comment added by {author}")
+        comments_storage.append(new_comment)
+        app.logger.info(f"New comment added by {sanitized_author}")
         
         return jsonify({
-            "message": "Comentario agregado exitosamente",
+            "message": "Comment added successfully",
             "comment": new_comment
         }), 201
         
     except Exception as e:
         app.logger.error(f"Error adding comment: {str(e)}")
-        return jsonify({"error": "Failed to add comment"}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 @app.route('/comments/<int:comment_id>', methods=['GET'])
 @rate_limit(max_requests=100)
 def get_comment(comment_id):
-    """Obtener un comentario específico"""
+    """Get a specific comment by ID."""
     try:
-        comment = next((c for c in comments_db if c['id'] == comment_id), None)
+        comment = next((c for c in comments_storage if c['id'] == comment_id), None)
         
         if not comment:
-            return jsonify({"error": "Comentario no encontrado"}), 404
+            return jsonify({"error": "Comment not found"}), 404
         
         app.logger.info(f"Fetched comment {comment_id}")
-        return jsonify(comment)
+        return jsonify(comment), 200
         
     except Exception as e:
         app.logger.error(f"Error fetching comment {comment_id}: {str(e)}")
@@ -176,84 +266,87 @@ def get_comment(comment_id):
 @app.route('/comments/<int:comment_id>', methods=['DELETE'])
 @rate_limit(max_requests=30)
 def delete_comment(comment_id):
-    """Eliminar un comentario"""
+    """Delete a specific comment by ID."""
+    global comments_storage
+    
     try:
-        global comments_db
-        
-        comment = next((c for c in comments_db if c['id'] == comment_id), None)
+        comment = next((c for c in comments_storage if c['id'] == comment_id), None)
         
         if not comment:
-            return jsonify({"error": "Comentario no encontrado"}), 404
+            return jsonify({"error": "Comment not found"}), 404
         
-        comments_db = [c for c in comments_db if c['id'] != comment_id]
+        comments_storage = [c for c in comments_storage if c['id'] != comment_id]
         app.logger.info(f"Deleted comment {comment_id}")
         
-        return jsonify({"message": f"Comentario {comment_id} eliminado exitosamente"})
+        return jsonify({"message": f"Comment {comment_id} deleted successfully"}), 200
         
     except Exception as e:
         app.logger.error(f"Error deleting comment {comment_id}: {str(e)}")
         return jsonify({"error": "Failed to delete comment"}), 500
 
-@app.route('/weather/<city>')
+@app.route('/weather/<city>', methods=['GET'])
 @rate_limit(max_requests=60)
 def get_weather(city):
-    """Endpoint que consume API externa - OpenWeatherMap"""
+    """Demo weather endpoint that returns mock data."""
     try:
-        # Validar nombre de ciudad
-        try:
-            city = InputValidator.validate_city_name(city)
-        except ValidationError as e:
-            return jsonify({
-                "error": "Invalid city name",
-                "message": e.message
-            }), 400
+        # Sanitize city name
+        sanitized_city = sanitize_input(city)
+        
+        # Validate city name format
+        if not re.match(r"^[a-zA-ZÀ-ÿ\s\-']+$", sanitized_city):
+            sanitized_city = re.sub(r'[^a-zA-ZÀ-ÿ\s\-\']', '', sanitized_city)
         
         api_key = app.config['WEATHER_API_KEY']
         
         if api_key == 'demo-key':
-            return jsonify({
-                "city": city,
+            # Return demo data
+            weather_data = {
+                "city": sanitized_city,
                 "temperature": "22°C",
-                "description": "Soleado",
+                "description": "Sunny",
                 "humidity": "65%",
-                "note": "Datos de demostración - configurar API_KEY real"
-            })
-        
-        url = f"http://api.openweathermap.org/data/2.5/weather"
-        params = {
-            'q': city,
-            'appid': api_key,
-            'units': 'metric',
-            'lang': 'es'
-        }
-        
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            result = {
-                "city": data['name'],
-                "temperature": f"{data['main']['temp']}°C",
-                "description": data['weather'][0]['description'],
-                "humidity": f"{data['main']['humidity']}%",
-                "country": data['sys']['country']
+                "wind_speed": "15 km/h",
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "note": "This is demo data for testing purposes"
             }
-            app.logger.info(f"Weather data fetched for {city}")
-            return jsonify(result)
         else:
-            return jsonify({"error": "Ciudad no encontrada"}), 404
+            # Make real API call
+            url = f"http://api.openweathermap.org/data/2.5/weather"
+            params = {
+                'q': sanitized_city,
+                'appid': api_key,
+                'units': 'metric',
+                'lang': 'en'
+            }
             
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                weather_data = {
+                    "city": data['name'],
+                    "temperature": f"{data['main']['temp']}°C",
+                    "description": data['weather'][0]['description'],
+                    "humidity": f"{data['main']['humidity']}%",
+                    "country": data['sys']['country']
+                }
+            else:
+                return jsonify({"error": "City not found"}), 404
+        
+        app.logger.info(f"Weather data fetched for {sanitized_city}")
+        return jsonify(weather_data), 200
+        
     except requests.exceptions.RequestException as e:
         app.logger.error(f"Weather API error: {str(e)}")
-        return jsonify({"error": f"Error al consultar API: {str(e)}"}), 500
+        return jsonify({"error": f"Weather API error: {str(e)}"}), 500
     except Exception as e:
         app.logger.error(f"Weather endpoint error: {str(e)}")
         return jsonify({"error": "Weather service unavailable"}), 500
 
-@app.route('/api-demo')
+@app.route('/api-demo', methods=['GET'])
 @rate_limit(max_requests=80)
 def api_demo():
-    """Demostración de consumo de API pública"""
+    """API demonstration endpoint."""
     try:
         response = requests.get('https://jsonplaceholder.typicode.com/posts/1', timeout=10)
         
@@ -261,17 +354,60 @@ def api_demo():
             data = response.json()
             app.logger.info("API demo data fetched successfully")
             return jsonify({
-                "message": "Ejemplo de consumo de API externa",
+                "message": "API Demo Endpoint",
                 "api_response": data,
-                "source": "jsonplaceholder.typicode.com"
-            })
+                "source": "jsonplaceholder.typicode.com",
+                "features": [
+                    "RESTful API design",
+                    "JSON responses",
+                    "Input validation",
+                    "Security headers",
+                    "Error handling"
+                ],
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }), 200
         else:
-            return jsonify({"error": "Error al consumir API externa"}), 500
+            return jsonify({"error": "External API error"}), 500
             
     except Exception as e:
         app.logger.error(f"API demo error: {str(e)}")
         return jsonify({"error": "Demo service unavailable"}), 500
 
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors."""
+    return jsonify({
+        "error": "Not Found",
+        "message": "The requested resource was not found",
+        "status_code": 404
+    }), 404
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    """Handle 405 errors."""
+    return jsonify({
+        "error": "Method Not Allowed",
+        "message": "The method is not allowed for the requested URL",
+        "status_code": 405
+    }), 405
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors."""
+    app.logger.error(f"Internal server error: {str(error)}")
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": "An internal server error occurred",
+        "status_code": 500
+    }), 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=app.config['DEBUG'])
+    debug = app.config.get('DEBUG', False)
+    
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        debug=debug
+    )

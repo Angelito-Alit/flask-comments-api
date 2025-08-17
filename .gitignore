@@ -19,12 +19,14 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual Environment
 venv/
 ENV/
 env/
 .env
+.venv
 
 # IDE
 .vscode/
@@ -38,6 +40,9 @@ env/
 htmlcov/
 .pytest_cache/
 .cache
+coverage.xml
+*.cover
+.coverage.*
 
 # OS
 .DS_Store
@@ -52,9 +57,13 @@ Thumbs.db
 *.log
 logs/
 
-# Secrets (IMPORTANTE PARA SEGURIDAD)
-config.py
+# Security files (IMPORTANTE PARA SEGURIDAD)
 .env.local
 .env.production
 secrets.json
 service-account-key.json
+
+# Reports
+bandit-report.json
+safety-report.json
+trivy-results.sarif 
