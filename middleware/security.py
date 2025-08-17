@@ -15,7 +15,6 @@ def rate_limit(max_requests=100, window=3600):
             client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
             current_time = time.time()
             window_start = current_time - window
-            
             # Keep only requests within the current time window
             if client_ip in request_counts:
                 request_counts[client_ip] = [
