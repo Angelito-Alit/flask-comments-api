@@ -7,6 +7,7 @@ import re
 
 request_counts = {}
 
+# Enforces request rate limiting per client IP
 def rate_limit(max_requests=100, window=3600):
     def decorator(f):
         @wraps(f)
@@ -15,6 +16,7 @@ def rate_limit(max_requests=100, window=3600):
             current_time = time.time()
             window_start = current_time - window
             
+            # Keep only requests within the current time window
             if client_ip in request_counts:
                 request_counts[client_ip] = [
                     req_time for req_time in request_counts[client_ip] 
@@ -23,6 +25,7 @@ def rate_limit(max_requests=100, window=3600):
             else:
                 request_counts[client_ip] = []
             
+            # Reject if request limit exceeded
             if len(request_counts[client_ip]) >= max_requests:
                 return jsonify({
                     'error': 'Rate limit exceeded',
@@ -30,11 +33,11 @@ def rate_limit(max_requests=100, window=3600):
                 }), 429
             
             request_counts[client_ip].append(current_time)
-            
             return f(*args, **kwargs)
         return decorated_function
     return decorator
 
+# Validates incoming JSON payload and required fields
 def validate_json(required_fields=None):
     def decorator(f):
         @wraps(f)
@@ -58,17 +61,18 @@ def validate_json(required_fields=None):
         return decorated_function
     return decorator
 
+# Sanitizes user input by removing unsafe characters
 def sanitize_input(text):
     if not isinstance(text, str):
         return text
     
     text = re.sub(r'[<>"\']', '', text)
-    
     if len(text) > 500:
         text = text[:500]
     
     return text.strip()
 
+# Adds security headers and metadata to HTTP responses
 def add_security_headers(response):
     if current_app.config.get('SECURITY_HEADERS'):
         for header, value in current_app.config['SECURITY_HEADERS'].items():
